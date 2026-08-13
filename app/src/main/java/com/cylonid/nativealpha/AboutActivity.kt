@@ -5,7 +5,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import androidx.activity.addCallback
-import androidx.appcompat.app.AppCompatActivity
+import com.cylonid.nativealpha.activities.LocalizedAppCompatActivity
 import com.cylonid.nativealpha.databinding.ActivityToolbarBaseBinding
 import com.cylonid.nativealpha.util.ColorUtils.getColorResFromThemeAttr
 import com.mikepenz.aboutlibraries.LibsBuilder
@@ -13,7 +13,7 @@ import mehdi.sakout.aboutpage.AboutPage
 import mehdi.sakout.aboutpage.Element
 import java.time.Year
 
-class AboutActivity : AppCompatActivity() {
+class AboutActivity : LocalizedAppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 

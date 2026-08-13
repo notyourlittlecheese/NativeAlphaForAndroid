@@ -88,6 +88,20 @@
 
                         </LinearLayout>
 
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/select_language" />
+
+                        <Spinner
+                            android:id="@+id/dropDownLanguage"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:entries="@array/app_languages"
+                            android:prompt="@string/select_language"
+                            android:spinnerMode="dropdown"
+                            tools:listitem="@android:layout/simple_spinner_item" />
+
                         <com.google.android.material.materialswitch.MaterialSwitch
                             android:id="@+id/switchGlobalCache"
                             android:layout_width="match_parent"

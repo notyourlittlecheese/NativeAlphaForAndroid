@@ -53,17 +53,30 @@ class WebAppListFragment : Fragment(R.layout.fragment_web_app_list) {
             item: WebApp
         ): Boolean {
             if(direction == OnItemSwipeListener.SwipeDirection.RIGHT_TO_LEFT) {
-                item.markInactive(requiredActivity())
-                saveCurrentDisplayedOrderOfWebAppsToDisk()
+                AlertDialog.Builder(requiredActivity())
+                    .setMessage(getString(R.string.delete_question))
+                    .setPositiveButton(R.string.ok) { _: DialogInterface?, _: Int ->
+                        item.markInactive(requiredActivity())
+                        saveCurrentDisplayedOrderOfWebAppsToDisk()
 
-                val itemSwipedSnackBar =
-                    view?.let { Snackbar.make(it, getString(R.string.x_was_removed, item.title), Snackbar.LENGTH_SHORT) }
-                itemSwipedSnackBar?.setAction(getString(R.string.undo).uppercase()) {
-                    item.isActiveEntry = true
-                    DataManager.getInstance().saveWebAppData()
-                    updateWebAppList()
-                }
-                itemSwipedSnackBar?.show()
+                        val itemSwipedSnackBar =
+                            view?.let { Snackbar.make(it, getString(R.string.x_was_removed, item.title), Snackbar.LENGTH_SHORT) }
+                        itemSwipedSnackBar?.setAction(getString(R.string.undo).uppercase()) {
+                            item.isActiveEntry = true
+                            DataManager.getInstance().saveWebAppData()
+                            updateWebAppList()
+                        }
+                        itemSwipedSnackBar?.show()
+                    }
+                    .setNegativeButton(R.string.cancel) { _: DialogInterface?, _: Int ->
+                        updateWebAppList()
+                    }
+                    .setOnCancelListener {
+                        updateWebAppList()
+                    }
+                    .create()
+                    .show()
+                return true
             }
             if(direction == OnItemSwipeListener.SwipeDirection.LEFT_TO_RIGHT) {
                 val intent = Intent(

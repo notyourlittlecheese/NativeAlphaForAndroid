@@ -55,6 +55,10 @@
                     android:id="@+id/cmFallbackContextmenuTemp"
                     android:iconTint="?attr/colorOnSurface"
                     android:icon="@drawable/baseline_menu_open_24"/>
+                <item android:title="@string/use_standard_context_menu_permanently"
+                    android:id="@+id/cmFallbackContextmenuPermanent"
+                    android:iconTint="?attr/colorOnSurface"
+                    android:icon="@drawable/baseline_menu_open_24"/>
                 <item
                     android:id="@+id/cmItemCloseWebApp"
                     android:iconTint="?attr/colorOnSurface"

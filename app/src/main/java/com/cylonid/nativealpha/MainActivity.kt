@@ -11,8 +11,8 @@ import android.view.MenuItem
 import androidx.annotation.StringRes
 import androidx.annotation.VisibleForTesting
 import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
+import com.cylonid.nativealpha.activities.LocalizedAppCompatActivity
 import com.cylonid.nativealpha.databinding.AddWebsiteDialogueBinding
 import com.cylonid.nativealpha.fragments.webapplist.WebAppListFragment
 import com.cylonid.nativealpha.helper.AdblockLifecycleHelper
@@ -24,7 +24,7 @@ import com.google.android.material.floatingactionbutton.FloatingActionButton
 import io.github.edsuns.adfilter.AdFilter
 
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : LocalizedAppCompatActivity() {
     private lateinit var webAppListFragment: WebAppListFragment
 
     override fun onCreate(savedInstanceState: Bundle?) {

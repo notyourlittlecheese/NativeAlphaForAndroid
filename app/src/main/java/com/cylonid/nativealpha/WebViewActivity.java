@@ -3,9 +3,10 @@ package com.cylonid.nativealpha;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Application;
-import android.app.DownloadManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
@@ -17,6 +18,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.provider.MediaStore;
 import android.text.SpannableString;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.StyleSpan;
@@ -31,6 +33,7 @@ import android.view.WindowManager;
 import android.webkit.CookieManager;
 import android.webkit.GeolocationPermissions;
 import android.webkit.HttpAuthHandler;
+import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.SslErrorHandler;
 import android.webkit.ValueCallback;
@@ -46,7 +49,6 @@ import android.widget.ProgressBar;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
-import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.app.AppCompatDelegate;
 import androidx.core.app.ActivityCompat;
 import androidx.core.app.ShareCompat;
@@ -55,9 +57,12 @@ import androidx.webkit.WebSettingsCompat;
 import androidx.webkit.WebViewFeature;
 
 import com.cylonid.nativealpha.databinding.DialogHttpAuthBinding;
+import com.cylonid.nativealpha.activities.LocalizedAppCompatActivity;
 import com.cylonid.nativealpha.helper.AdblockLifecycleHelper;
 import com.cylonid.nativealpha.helper.AdblockProviderApiHelper;
 import com.cylonid.nativealpha.helper.BiometricPromptHelper;
+import com.cylonid.nativealpha.helper.HttpAuthCredentialStore;
+import com.cylonid.nativealpha.helper.HttpAuthCredentials;
 import com.cylonid.nativealpha.helper.IconPopupMenuHelper;
 import com.cylonid.nativealpha.model.AdblockConfig;
 import com.cylonid.nativealpha.model.DataManager;
@@ -73,17 +78,27 @@ import com.cylonid.nativealpha.util.WebViewLauncher;
 import com.google.android.material.color.MaterialColors;
 import com.google.android.material.snackbar.Snackbar;
 
-import java.io.UnsupportedEncodingException;
-import java.net.URLDecoder;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Calendar;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.stream.Stream;
+
+import org.json.JSONObject;
 
 import io.github.edsuns.adfilter.AdFilter;
 import io.github.edsuns.adfilter.Filter;
@@ -91,7 +106,7 @@ import pub.devrel.easypermissions.EasyPermissions;
 
 import static com.cylonid.nativealpha.util.Const.CODE_OPEN_FILE;
 
-public class WebViewActivity extends AppCompatActivity implements EasyPermissions.PermissionCallbacks {
+public class WebViewActivity extends LocalizedAppCompatActivity implements EasyPermissions.PermissionCallbacks {
 
     //Constants for touchlistener
     private static final int NONE = 0;
@@ -103,7 +118,8 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
     private boolean currently_reloading = true;
     private GeolocationPermissions.Callback mGeoPermissionRequestCallback = null;
     private String mGeoPermissionRequestOrigin = null;
-    private DownloadManager.Request dl_request = null;
+    private WebDownload dl_request_internal = null;
+    private String pendingBlobDownloadToken = null;
     private Map<String, String> CUSTOM_HEADERS;
     protected ValueCallback<Uri[]> filePathCallback;
 
@@ -248,6 +264,7 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
         CUSTOM_HEADERS = initCustomHeaders(webapp.isSendSavedataRequest());
         loadURL(wv, url);
         wv.setWebChromeClient(new CustomWebChromeClient());
+        wv.addJavascriptInterface(new DownloadJavascriptInterface(), "NativeAlphaDownloader");
         wv.setOnLongClickListener(view -> {
             if(webapp.getAlwaysUseFallbackContextMenu()) return false;
             if(fallbackToDefaultLongClickBehaviour) {
@@ -261,63 +278,27 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
 
         wv.setDownloadListener((dl_url, userAgent, contentDisposition, mimeType, contentLength) -> {
 
-            if (mimeType.equals("application/pdf")) {
-                Intent i = new Intent(Intent.ACTION_VIEW);
-                i.setData(Uri.parse(dl_url));
-                startActivity(i);
-            } else {
-                if(dl_url != null && !dl_url.equals("")) {
-                    if(dl_url.startsWith("blob:")) {
-                        dl_url = dl_url.replace("blob:", "");
-                        try {
-                            dl_url = URLDecoder.decode(dl_url, "UTF-8");
-                        } catch (UnsupportedEncodingException e) {
-                            e.printStackTrace();
-                        }
-                    }
-                    DownloadManager.Request request = null;
-                    try {
-                        request = new DownloadManager.Request(
-                                Uri.parse(dl_url));
-                    }
-                    catch(Exception e) {
-                        NotificationUtils.showInfoSnackbar(this, getString(R.string.file_download), Snackbar.LENGTH_SHORT);
-                    }
-                  String file_name = Utility.getFileNameFromDownload(dl_url, contentDisposition, mimeType);
-
-                  request.setMimeType(mimeType);
-                  request.addRequestHeader("cookie", CookieManager.getInstance().getCookie(dl_url));
-                  request.addRequestHeader("User-Agent", userAgent);
-                  request.setTitle(file_name);
-                  request.allowScanningByMediaScanner();
-                  request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                  request.setDestinationInExternalPublicDir(
-                          Environment.DIRECTORY_DOWNLOADS, file_name);
-
-                  DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-
-                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                      String[] perms = {Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.READ_EXTERNAL_STORAGE};
-                      if (!EasyPermissions.hasPermissions(WebViewActivity.this, perms)) {
-                          dl_request = request;
-                          EasyPermissions.requestPermissions(WebViewActivity.this, getString(R.string.permission_storage_rationale), Const.PERMISSION_RC_STORAGE, perms);
-                      } else {
-                          if (dm != null) {
-                              dm.enqueue(request);
-                              NotificationUtils.showInfoSnackbar(this, getString(R.string.file_download), Snackbar.LENGTH_SHORT);
-                          }
-                      }
-                  }
-                  //No storage permission needed for Android 10+
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                      if (dm != null) {
-                          dm.enqueue(request);
-                          NotificationUtils.showInfoSnackbar(this, getString(R.string.file_download), Snackbar.LENGTH_SHORT);
-                      }
-                  }
-                }
-
+            if(dl_url == null || dl_url.equals("")) return;
+            if(dl_url.startsWith("blob:")) {
+                downloadBlobUrl(dl_url, contentDisposition, mimeType);
+                return;
             }
+            WebDownload download = new WebDownload(dl_url, userAgent, contentDisposition, mimeType);
+            if(!download.isSupported()) {
+                openDownloadExternally(dl_url);
+                return;
+            }
+
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                String[] perms = {Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.READ_EXTERNAL_STORAGE};
+                if (!EasyPermissions.hasPermissions(WebViewActivity.this, perms)) {
+                    dl_request_internal = download;
+                    EasyPermissions.requestPermissions(WebViewActivity.this, getString(R.string.permission_storage_rationale), Const.PERMISSION_RC_STORAGE, perms);
+                    return;
+                }
+            }
+
+            startInternalDownload(download);
         });
         wv.setOnTouchListener(new View.OnTouchListener() {
             private int mode = NONE;
@@ -436,7 +417,7 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
         String currentUrl = wv.getUrl();
         String title = "";
         if (currentUrl != null) {
-            title = currentUrl.length() < 32 ? currentUrl : currentUrl.substring(0, 32) + "…";
+            title = currentUrl.length() < 32 ? currentUrl : currentUrl.substring(0, 32) + "...";
         }
         SpannableString spanStringWebAppTitle = new SpannableString(title);
 
@@ -486,6 +467,12 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
                     return true;
                 case R.id.cmFallbackContextmenuTemp:
                     fallbackToDefaultLongClickBehaviour = true;
+                    return true;
+                case R.id.cmFallbackContextmenuPermanent:
+                    webapp.setAlwaysUseFallbackContextMenu(true);
+                    DataManager.getInstance().replaceWebApp(webapp);
+                    fallbackToDefaultLongClickBehaviour = true;
+                    NotificationUtils.showToast(this, getString(R.string.use_standard_context_menu_permanently));
                     return true;
                 case R.id.cmMainMenu:
                     Intent intent = new Intent(this, MainActivity.class);
@@ -680,6 +667,238 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
         wv.reload();
     }
 
+    private void startInternalDownload(WebDownload download) {
+        NotificationUtils.showInfoSnackbar(this, getString(R.string.file_download), Snackbar.LENGTH_SHORT);
+        new Thread(() -> {
+            try {
+                downloadToDownloads(download);
+                runOnUiThread(() -> NotificationUtils.showInfoSnackbar(this, getString(R.string.file_download_complete), Snackbar.LENGTH_SHORT));
+            } catch (Exception e) {
+                Log.e("NativeAlpha", "Download failed", e);
+                runOnUiThread(() -> NotificationUtils.showInfoSnackbar(this, getString(R.string.file_download_failed), Snackbar.LENGTH_LONG));
+            }
+        }).start();
+    }
+
+    private void downloadBlobUrl(String blobUrl, String contentDisposition, String mimeType) {
+        String fileName = Utility.getFileNameFromDownload(wv.getUrl(), contentDisposition, mimeType);
+        String token = UUID.randomUUID().toString();
+        pendingBlobDownloadToken = token;
+        String script = "(function(){"
+                + "fetch(" + JSONObject.quote(blobUrl) + ").then(function(response){return response.blob();}).then(function(blob){"
+                + "var reader=new FileReader();"
+                + "reader.onloadend=function(){NativeAlphaDownloader.saveBlob(" + JSONObject.quote(token) + ",reader.result," + JSONObject.quote(fileName) + ",blob.type||" + JSONObject.quote(mimeType == null ? "" : mimeType) + ");};"
+                + "reader.onerror=function(){NativeAlphaDownloader.downloadFailed(" + JSONObject.quote(token) + ");};"
+                + "reader.readAsDataURL(blob);"
+                + "}).catch(function(){NativeAlphaDownloader.downloadFailed(" + JSONObject.quote(token) + ");});"
+                + "})();";
+        NotificationUtils.showInfoSnackbar(this, getString(R.string.file_download), Snackbar.LENGTH_SHORT);
+        wv.evaluateJavascript(script, null);
+    }
+
+    private void saveBlobToDownloads(String dataUrl, String fileName, String mimeType) throws IOException {
+        int commaIndex = dataUrl.indexOf(',');
+        if(!dataUrl.startsWith("data:") || commaIndex < 0) {
+            throw new IOException("Unexpected blob data URL");
+        }
+
+        String metadata = dataUrl.substring(5, commaIndex);
+        if(mimeType == null || mimeType.equals("")) {
+            int semicolonIndex = metadata.indexOf(';');
+            mimeType = semicolonIndex >= 0 ? metadata.substring(0, semicolonIndex) : metadata;
+        }
+        if(mimeType == null || mimeType.equals("")) {
+            mimeType = "application/octet-stream";
+        }
+
+        byte[] data = Base64.getDecoder().decode(dataUrl.substring(commaIndex + 1));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            saveBytesToMediaStore(data, fileName, mimeType);
+        } else {
+            saveBytesToLegacyDownloads(data, fileName);
+        }
+    }
+
+    private void saveBytesToMediaStore(byte[] data, String fileName, String mimeType) throws IOException {
+        ContentResolver resolver = getContentResolver();
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+        values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
+        values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+        values.put(MediaStore.Downloads.IS_PENDING, 1);
+
+        Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+        if(uri == null) throw new IOException("Could not create download entry");
+
+        try (OutputStream output = resolver.openOutputStream(uri)) {
+            if(output == null) throw new IOException("Could not open download output stream");
+            output.write(data);
+        } catch (IOException e) {
+            resolver.delete(uri, null, null);
+            throw e;
+        }
+
+        values.clear();
+        values.put(MediaStore.Downloads.IS_PENDING, 0);
+        resolver.update(uri, values, null, null);
+    }
+
+    private void saveBytesToLegacyDownloads(byte[] data, String fileName) throws IOException {
+        File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        if(!downloadsDir.exists() && !downloadsDir.mkdirs()) {
+            throw new IOException("Could not create downloads directory");
+        }
+        File destination = new File(downloadsDir, fileName);
+        try (OutputStream output = new FileOutputStream(destination)) {
+            output.write(data);
+        }
+    }
+
+    private void downloadToDownloads(WebDownload download) throws IOException {
+        HttpURLConnection connection = (HttpURLConnection) new URL(download.url).openConnection();
+        connection.setInstanceFollowRedirects(true);
+        if(download.userAgent != null && !download.userAgent.equals("")) {
+            connection.setRequestProperty("User-Agent", download.userAgent);
+        }
+        String cookie = CookieManager.getInstance().getCookie(download.url);
+        if(cookie != null && !cookie.equals("")) {
+            connection.setRequestProperty("Cookie", cookie);
+        }
+        HttpAuthCredentials credentials = HttpAuthCredentialStore.INSTANCE.getForHost(this, new URL(download.url).getHost());
+        if(credentials != null) {
+            String auth = credentials.getUsername() + ":" + credentials.getPassword();
+            String encoded = Base64.getEncoder().encodeToString(auth.getBytes(StandardCharsets.UTF_8));
+            connection.setRequestProperty("Authorization", "Basic " + encoded);
+        }
+        connection.connect();
+
+        int responseCode = connection.getResponseCode();
+        if(responseCode < 200 || responseCode >= 300) {
+            throw new IOException("Unexpected HTTP " + responseCode);
+        }
+
+        String fileName = Utility.getFileNameFromDownload(download.url, download.contentDisposition, download.mimeType);
+        String mimeType = download.mimeType;
+        if(mimeType == null || mimeType.equals("")) {
+            mimeType = connection.getContentType();
+        }
+        if(mimeType == null || mimeType.equals("")) {
+            mimeType = "application/octet-stream";
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            downloadToMediaStore(connection, fileName, mimeType);
+        } else {
+            downloadToLegacyDownloads(connection, fileName);
+        }
+        connection.disconnect();
+    }
+
+    private void downloadToMediaStore(HttpURLConnection connection, String fileName, String mimeType) throws IOException {
+        ContentResolver resolver = getContentResolver();
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+        values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
+        values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+        values.put(MediaStore.Downloads.IS_PENDING, 1);
+
+        Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+        if(uri == null) throw new IOException("Could not create download entry");
+
+        try (InputStream input = connection.getInputStream(); OutputStream output = resolver.openOutputStream(uri)) {
+            if(output == null) throw new IOException("Could not open download output stream");
+            copyStream(input, output);
+        } catch (IOException e) {
+            resolver.delete(uri, null, null);
+            throw e;
+        }
+
+        values.clear();
+        values.put(MediaStore.Downloads.IS_PENDING, 0);
+        resolver.update(uri, values, null, null);
+    }
+
+    private void downloadToLegacyDownloads(HttpURLConnection connection, String fileName) throws IOException {
+        File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        if(!downloadsDir.exists() && !downloadsDir.mkdirs()) {
+            throw new IOException("Could not create downloads directory");
+        }
+        File destination = new File(downloadsDir, fileName);
+        try (InputStream input = connection.getInputStream(); OutputStream output = new FileOutputStream(destination)) {
+            copyStream(input, output);
+        }
+    }
+
+    private void copyStream(InputStream input, OutputStream output) throws IOException {
+        byte[] buffer = new byte[8192];
+        int read;
+        while ((read = input.read(buffer)) != -1) {
+            output.write(buffer, 0, read);
+        }
+    }
+
+    private void openDownloadExternally(String url) {
+        try {
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setData(Uri.parse(url));
+            startActivity(i);
+        } catch (Exception e) {
+            NotificationUtils.showInfoSnackbar(this, getString(R.string.file_download_failed), Snackbar.LENGTH_LONG);
+        }
+    }
+
+    private synchronized boolean consumeBlobDownloadToken(String token) {
+        if(pendingBlobDownloadToken == null || !pendingBlobDownloadToken.equals(token)) {
+            return false;
+        }
+        pendingBlobDownloadToken = null;
+        return true;
+    }
+
+    private static class WebDownload {
+        final String url;
+        final String userAgent;
+        final String contentDisposition;
+        final String mimeType;
+
+        WebDownload(String url, String userAgent, String contentDisposition, String mimeType) {
+            this.url = normalizeUrl(url);
+            this.userAgent = userAgent;
+            this.contentDisposition = contentDisposition;
+            this.mimeType = mimeType;
+        }
+
+        boolean isSupported() {
+            return url.startsWith("http://") || url.startsWith("https://");
+        }
+
+        private static String normalizeUrl(String url) {
+            return url == null ? "" : url;
+        }
+    }
+
+    private class DownloadJavascriptInterface {
+        @JavascriptInterface
+        public void saveBlob(String token, String dataUrl, String fileName, String mimeType) {
+            if(!consumeBlobDownloadToken(token)) return;
+            new Thread(() -> {
+                try {
+                    saveBlobToDownloads(dataUrl, fileName, mimeType);
+                    runOnUiThread(() -> NotificationUtils.showInfoSnackbar(WebViewActivity.this, getString(R.string.file_download_complete), Snackbar.LENGTH_SHORT));
+                } catch (Exception e) {
+                    Log.e("NativeAlpha", "Blob download failed", e);
+                    runOnUiThread(() -> NotificationUtils.showInfoSnackbar(WebViewActivity.this, getString(R.string.file_download_failed), Snackbar.LENGTH_LONG));
+                }
+            }).start();
+        }
+
+        @JavascriptInterface
+        public void downloadFailed(String token) {
+            if(!consumeBlobDownloadToken(token)) return;
+            runOnUiThread(() -> NotificationUtils.showInfoSnackbar(WebViewActivity.this, getString(R.string.file_download_failed), Snackbar.LENGTH_LONG));
+        }
+    }
+
     @Override
     public void onPermissionsGranted(int requestCode, @NonNull List<String> list) {
         if (requestCode == Const.PERMISSION_RC_LOCATION) {
@@ -690,14 +909,9 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
             enablePermissionBoolOnWebApp(() -> webapp.setCameraPermission(true));
         }
         if (requestCode == Const.PERMISSION_RC_STORAGE) {
-            if (dl_request != null) {
-                DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-                if (dm != null) {
-                    dm.enqueue(dl_request);
-                    NotificationUtils.showInfoSnackbar(this, getString(R.string.file_download), Snackbar.LENGTH_SHORT);
-                }
-                dl_request = null;
-
+            if (dl_request_internal != null) {
+                startInternalDownload(dl_request_internal);
+                dl_request_internal = null;
             }
         }
     }
@@ -866,6 +1080,16 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
     }
 
     private void showHttpAuthDialog(final HttpAuthHandler handler, String host, String realm) {
+        HttpAuthCredentials credentials = HttpAuthCredentialStore.INSTANCE.get(this, host, realm);
+        if(credentials != null) {
+            new BiometricPromptHelper(WebViewActivity.this).showPrompt(
+                    () -> handler.proceed(credentials.getUsername(), credentials.getPassword()),
+                    handler::cancel,
+                    getString(R.string.bioprompt_use_saved_http_auth_credentials)
+            );
+            return;
+        }
+
         DialogHttpAuthBinding localBinding = DialogHttpAuthBinding.inflate(LayoutInflater.from(this));
         new AlertDialog.Builder(this)
                 .setView(localBinding.getRoot())
@@ -874,6 +1098,9 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
                 .setPositiveButton(getString(R.string.ok), (dialog, whichButton) -> {
                     String username = localBinding.username.getText().toString();
                     String password = localBinding.password.getText().toString();
+                    if(localBinding.saveCredentials.isChecked()) {
+                        HttpAuthCredentialStore.INSTANCE.save(this, host, realm, username, password);
+                    }
 
                     handler.proceed(username, password);
 

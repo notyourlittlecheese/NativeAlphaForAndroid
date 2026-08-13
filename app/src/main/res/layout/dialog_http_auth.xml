@@ -24,4 +24,10 @@
         android:hint="@string/password"
         tools:ignore="Autofill" />
 
+    <CheckBox
+        android:id="@+id/saveCredentials"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/save_http_auth_credentials" />
+
 </LinearLayout>

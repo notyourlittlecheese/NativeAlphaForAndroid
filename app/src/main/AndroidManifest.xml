@@ -50,8 +50,8 @@
             android:launchMode="standard"
             android:documentLaunchMode="intoExisting"
             />
- 
         <!--Placeholder-->
+
         <activity
             android:name="com.cylonid.nativealpha.SettingsActivity"
             android:parentActivityName=".MainActivity"

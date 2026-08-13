@@ -3,11 +3,10 @@ package com.cylonid.nativealpha.activities
 import android.os.Bundle
 import android.view.LayoutInflater
 import androidx.activity.addCallback
-import androidx.appcompat.app.AppCompatActivity
 import androidx.viewbinding.ViewBinding
 import com.cylonid.nativealpha.databinding.ActivityToolbarBaseBinding
 
-abstract class ToolbarBaseActivity<VB : ViewBinding> : AppCompatActivity() {
+abstract class ToolbarBaseActivity<VB : ViewBinding> : LocalizedAppCompatActivity() {
 
     private lateinit var _binding: VB
     protected val binding get() = _binding

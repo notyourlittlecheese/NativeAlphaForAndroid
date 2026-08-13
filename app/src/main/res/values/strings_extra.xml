@@ -1,0 +1,10 @@
+<resources>
+    <string-array name="app_languages">
+        <item>Follow system</item>
+        <item>English</item>
+        <item>Simplified Chinese</item>
+    </string-array>
+    <string name="select_language">Language</string>
+    <string name="save_http_auth_credentials">Save credentials and use biometric confirmation next time</string>
+    <string name="bioprompt_use_saved_http_auth_credentials">Use saved HTTP Auth credentials?</string>
+</resources>

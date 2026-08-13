@@ -16,6 +16,7 @@ public class App extends Application {
     public void onCreate() {
         super.onCreate();
 
+        AppCompatLocaleDelegate.INSTANCE.wrap(this);
         App.context = getApplicationContext();
        if(!WorkManager.isInitialized()) {
            WorkManager.initialize(this, new Configuration.Builder().build());

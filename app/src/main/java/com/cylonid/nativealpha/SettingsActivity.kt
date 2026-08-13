@@ -14,6 +14,7 @@ import com.cylonid.nativealpha.activities.ToolbarBaseActivity
 import com.cylonid.nativealpha.databinding.GlobalSettingsBinding
 import com.cylonid.nativealpha.model.DataManager
 import com.cylonid.nativealpha.model.GlobalSettings
+import com.cylonid.nativealpha.util.AppCompatLocaleDelegate
 import com.cylonid.nativealpha.util.Const
 import com.cylonid.nativealpha.util.NotificationUtils
 import com.cylonid.nativealpha.util.Utility
@@ -32,6 +33,7 @@ class SettingsActivity : ToolbarBaseActivity<GlobalSettingsBinding>() {
         val settings = DataManager.getInstance().settings
         val modified_settings = settings.copy()
         binding.settings = modified_settings
+        setupLanguageSelection()
         binding.btnAdblockConfig.setOnClickListener { v: View? ->
             val intent = Intent(
                 this@SettingsActivity,
@@ -93,8 +95,17 @@ class SettingsActivity : ToolbarBaseActivity<GlobalSettingsBinding>() {
         }
 
         binding.btnSave.setOnClickListener {
+            val selectedLanguage = when (binding.dropDownLanguage.selectedItemPosition) {
+                1 -> AppCompatLocaleDelegate.LANGUAGE_ENGLISH
+                2 -> AppCompatLocaleDelegate.LANGUAGE_CHINESE_SIMPLIFIED
+                else -> AppCompatLocaleDelegate.LANGUAGE_SYSTEM
+            }
+            AppCompatLocaleDelegate.setLanguage(this, selectedLanguage)
             DataManager.getInstance().settings = modified_settings
+            val i = Intent(this@SettingsActivity, MainActivity::class.java)
+            i.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
             finish()
+            startActivity(i)
         }
 
         binding.btnCancel.setOnClickListener {
@@ -104,6 +115,16 @@ class SettingsActivity : ToolbarBaseActivity<GlobalSettingsBinding>() {
 
     override fun inflateBinding(layoutInflater: LayoutInflater): GlobalSettingsBinding {
         return GlobalSettingsBinding.inflate(layoutInflater)
+    }
+
+    private fun setupLanguageSelection() {
+        binding.dropDownLanguage.setSelection(
+            when (AppCompatLocaleDelegate.getLanguage(this)) {
+                AppCompatLocaleDelegate.LANGUAGE_ENGLISH -> 1
+                AppCompatLocaleDelegate.LANGUAGE_CHINESE_SIMPLIFIED -> 2
+                else -> 0
+            }
+        )
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
