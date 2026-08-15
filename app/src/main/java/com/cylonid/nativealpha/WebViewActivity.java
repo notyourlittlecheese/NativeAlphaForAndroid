@@ -279,6 +279,10 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
         wv.setDownloadListener((dl_url, userAgent, contentDisposition, mimeType, contentLength) -> {
 
             if(dl_url == null || dl_url.equals("")) return;
+            if(dl_url.startsWith("data:")) {
+                downloadDataUrl(dl_url, contentDisposition, mimeType);
+                return;
+            }
             if(dl_url.startsWith("blob:")) {
                 downloadBlobUrl(dl_url, contentDisposition, mimeType);
                 return;
@@ -681,7 +685,7 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
     }
 
     private void downloadBlobUrl(String blobUrl, String contentDisposition, String mimeType) {
-        String fileName = Utility.getFileNameFromDownload(wv.getUrl(), contentDisposition, mimeType);
+        String fileName = sanitizeDownloadFileName(Utility.getFileNameFromDownload(wv.getUrl(), contentDisposition, mimeType));
         String token = UUID.randomUUID().toString();
         pendingBlobDownloadToken = token;
         String script = "(function(){"
@@ -696,10 +700,28 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
         wv.evaluateJavascript(script, null);
     }
 
-    private void saveBlobToDownloads(String dataUrl, String fileName, String mimeType) throws IOException {
+    private void downloadDataUrl(String dataUrl, String contentDisposition, String mimeType) {
+        String fileName = sanitizeDownloadFileName(Utility.getFileNameFromDownload(wv.getUrl(), contentDisposition, mimeType));
+        saveDataUrlInBackground(dataUrl, fileName, mimeType);
+    }
+
+    private void saveDataUrlInBackground(String dataUrl, String fileName, String mimeType) {
+        NotificationUtils.showInfoSnackbar(this, getString(R.string.file_download), Snackbar.LENGTH_SHORT);
+        new Thread(() -> {
+            try {
+                saveDataUrlToDownloads(dataUrl, fileName, mimeType);
+                runOnUiThread(() -> NotificationUtils.showInfoSnackbar(WebViewActivity.this, getString(R.string.file_download_complete), Snackbar.LENGTH_SHORT));
+            } catch (Exception e) {
+                Log.e("NativeAlpha", "Data URL download failed", e);
+                runOnUiThread(() -> NotificationUtils.showInfoSnackbar(WebViewActivity.this, getString(R.string.file_download_failed), Snackbar.LENGTH_LONG));
+            }
+        }).start();
+    }
+
+    private void saveDataUrlToDownloads(String dataUrl, String fileName, String mimeType) throws IOException {
         int commaIndex = dataUrl.indexOf(',');
         if(!dataUrl.startsWith("data:") || commaIndex < 0) {
-            throw new IOException("Unexpected blob data URL");
+            throw new IOException("Unexpected data URL");
         }
 
         String metadata = dataUrl.substring(5, commaIndex);
@@ -711,7 +733,13 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
             mimeType = "application/octet-stream";
         }
 
-        byte[] data = Base64.getDecoder().decode(dataUrl.substring(commaIndex + 1));
+        byte[] data;
+        String payload = dataUrl.substring(commaIndex + 1);
+        if(metadata.toLowerCase().contains(";base64")) {
+            data = Base64.getDecoder().decode(payload);
+        } else {
+            data = Uri.decode(payload).getBytes(StandardCharsets.UTF_8);
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             saveBytesToMediaStore(data, fileName, mimeType);
         } else {
@@ -754,6 +782,13 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
         }
     }
 
+    private String sanitizeDownloadFileName(String fileName) {
+        if(fileName == null || fileName.trim().equals("")) {
+            return "download";
+        }
+        return fileName.replaceAll("[\\\\/:*?\"<>|\\r\\n]", "_").trim();
+    }
+
     private void downloadToDownloads(WebDownload download) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(download.url).openConnection();
         connection.setInstanceFollowRedirects(true);
@@ -777,7 +812,7 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
             throw new IOException("Unexpected HTTP " + responseCode);
         }
 
-        String fileName = Utility.getFileNameFromDownload(download.url, download.contentDisposition, download.mimeType);
+        String fileName = sanitizeDownloadFileName(Utility.getFileNameFromDownload(download.url, download.contentDisposition, download.mimeType));
         String mimeType = download.mimeType;
         if(mimeType == null || mimeType.equals("")) {
             mimeType = connection.getContentType();
@@ -883,7 +918,7 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
             if(!consumeBlobDownloadToken(token)) return;
             new Thread(() -> {
                 try {
-                    saveBlobToDownloads(dataUrl, fileName, mimeType);
+                    saveDataUrlToDownloads(dataUrl, fileName, mimeType);
                     runOnUiThread(() -> NotificationUtils.showInfoSnackbar(WebViewActivity.this, getString(R.string.file_download_complete), Snackbar.LENGTH_SHORT));
                 } catch (Exception e) {
                     Log.e("NativeAlpha", "Blob download failed", e);
@@ -1216,6 +1251,14 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
             String url = request.getUrl().toString();
             WebApp webapp = DataManager.getInstance().getWebApp(webappID);
 
+            if (url.startsWith("data:")) {
+                downloadDataUrl(url, null, null);
+                return true;
+            }
+            if (url.startsWith("blob:")) {
+                downloadBlobUrl(url, null, null);
+                return true;
+            }
             if (url.startsWith("tel:")) {
                 Intent intent = new Intent(Intent.ACTION_DIAL, Uri.parse(url));
                 startActivity(intent);
