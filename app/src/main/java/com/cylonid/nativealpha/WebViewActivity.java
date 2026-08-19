@@ -737,12 +737,42 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
                 (function() {
                   if (window.__nativeAlphaDownloadHookInstalled) return;
                   window.__nativeAlphaDownloadHookInstalled = true;
+                  var objectUrlBlobs = {};
+
+                  if (window.URL && URL.createObjectURL && URL.revokeObjectURL) {
+                    var originalCreateObjectURL = URL.createObjectURL.bind(URL);
+                    var originalRevokeObjectURL = URL.revokeObjectURL.bind(URL);
+                    URL.createObjectURL = function(object) {
+                      var url = originalCreateObjectURL(object);
+                      if (object instanceof Blob) {
+                        objectUrlBlobs[url] = object;
+                      }
+                      return url;
+                    };
+                    URL.revokeObjectURL = function(url) {
+                      setTimeout(function() {
+                        delete objectUrlBlobs[url];
+                        originalRevokeObjectURL(url);
+                      }, 30000);
+                    };
+                  }
 
                   function getDownloadAnchor(target) {
                     if (!target) return null;
                     if (target.tagName === 'A' && target.hasAttribute('download')) return target;
                     if (target.closest) return target.closest('a[download]');
                     return null;
+                  }
+
+                  function saveBlob(blob, filename, mimeType) {
+                    var reader = new FileReader();
+                    reader.onloadend = function() {
+                      NativeAlphaDownloader.saveGeneratedDownload(reader.result, filename, blob.type || mimeType || '');
+                    };
+                    reader.onerror = function() {
+                      NativeAlphaDownloader.downloadLinkFailed();
+                    };
+                    reader.readAsDataURL(blob);
                   }
 
                   function handleDownloadAnchor(anchor) {
@@ -752,17 +782,14 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
                     var filename = anchor.getAttribute('download') || '';
                     var mimeType = anchor.type || '';
                     if (/^blob:/i.test(href)) {
+                      if (objectUrlBlobs[href]) {
+                        saveBlob(objectUrlBlobs[href], filename, mimeType);
+                        return true;
+                      }
                       fetch(href).then(function(response) {
                         return response.blob();
                       }).then(function(blob) {
-                        var reader = new FileReader();
-                        reader.onloadend = function() {
-                          NativeAlphaDownloader.saveGeneratedDownload(reader.result, filename, blob.type || mimeType || '');
-                        };
-                        reader.onerror = function() {
-                          NativeAlphaDownloader.downloadLinkFailed();
-                        };
-                        reader.readAsDataURL(blob);
+                        saveBlob(blob, filename, mimeType);
                       }).catch(function() {
                         NativeAlphaDownloader.downloadLinkFailed();
                       });
