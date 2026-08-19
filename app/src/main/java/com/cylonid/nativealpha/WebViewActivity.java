@@ -685,7 +685,11 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
     }
 
     private void downloadBlobUrl(String blobUrl, String contentDisposition, String mimeType) {
-        String fileName = sanitizeDownloadFileName(Utility.getFileNameFromDownload(wv.getUrl(), contentDisposition, mimeType));
+        downloadBlobUrl(blobUrl, null, contentDisposition, mimeType);
+    }
+
+    private void downloadBlobUrl(String blobUrl, String requestedFileName, String contentDisposition, String mimeType) {
+        String fileName = resolveDownloadFileName(requestedFileName, wv.getUrl(), contentDisposition, mimeType);
         String token = UUID.randomUUID().toString();
         pendingBlobDownloadToken = token;
         String script = "(function(){"
@@ -701,8 +705,92 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
     }
 
     private void downloadDataUrl(String dataUrl, String contentDisposition, String mimeType) {
-        String fileName = sanitizeDownloadFileName(Utility.getFileNameFromDownload(wv.getUrl(), contentDisposition, mimeType));
+        downloadDataUrl(dataUrl, null, contentDisposition, mimeType);
+    }
+
+    private void downloadDataUrl(String dataUrl, String requestedFileName, String contentDisposition, String mimeType) {
+        String fileName = resolveDownloadFileName(requestedFileName, wv.getUrl(), contentDisposition, mimeType);
         saveDataUrlInBackground(dataUrl, fileName, mimeType);
+    }
+
+    private void downloadFromJavascript(String url, String requestedFileName, String mimeType) {
+        if(url == null || url.equals("")) return;
+        if(url.startsWith("data:")) {
+            downloadDataUrl(url, requestedFileName, null, mimeType);
+            return;
+        }
+        if(url.startsWith("blob:")) {
+            downloadBlobUrl(url, requestedFileName, null, mimeType);
+            return;
+        }
+
+        WebDownload download = new WebDownload(url, wv.getSettings().getUserAgentString(), null, mimeType, requestedFileName);
+        if(download.isSupported()) {
+            startInternalDownload(download);
+        } else {
+            openDownloadExternally(url);
+        }
+    }
+
+    private void injectDownloadLinkHandler() {
+        String script = """
+                (function() {
+                  if (window.__nativeAlphaDownloadHookInstalled) return;
+                  window.__nativeAlphaDownloadHookInstalled = true;
+
+                  function getDownloadAnchor(target) {
+                    if (!target) return null;
+                    if (target.tagName === 'A' && target.hasAttribute('download')) return target;
+                    if (target.closest) return target.closest('a[download]');
+                    return null;
+                  }
+
+                  function handleDownloadAnchor(anchor) {
+                    if (!anchor || !anchor.hasAttribute('download')) return false;
+                    var href = anchor.href || anchor.getAttribute('href') || '';
+                    if (!href) return false;
+                    var filename = anchor.getAttribute('download') || '';
+                    var mimeType = anchor.type || '';
+                    if (/^blob:/i.test(href)) {
+                      fetch(href).then(function(response) {
+                        return response.blob();
+                      }).then(function(blob) {
+                        var reader = new FileReader();
+                        reader.onloadend = function() {
+                          NativeAlphaDownloader.saveGeneratedDownload(reader.result, filename, blob.type || mimeType || '');
+                        };
+                        reader.onerror = function() {
+                          NativeAlphaDownloader.downloadLinkFailed();
+                        };
+                        reader.readAsDataURL(blob);
+                      }).catch(function() {
+                        NativeAlphaDownloader.downloadLinkFailed();
+                      });
+                      return true;
+                    }
+                    if (/^(data:|https?:)/i.test(href)) {
+                      NativeAlphaDownloader.downloadLink(href, filename, mimeType);
+                      return true;
+                    }
+                    return false;
+                  }
+
+                  document.addEventListener('click', function(event) {
+                    var anchor = getDownloadAnchor(event.target);
+                    if (handleDownloadAnchor(anchor)) {
+                      event.preventDefault();
+                      event.stopImmediatePropagation();
+                    }
+                  }, true);
+
+                  var originalClick = HTMLAnchorElement.prototype.click;
+                  HTMLAnchorElement.prototype.click = function() {
+                    if (handleDownloadAnchor(this)) return;
+                    return originalClick.apply(this, arguments);
+                  };
+                })();
+                """;
+        wv.evaluateJavascript(script, null);
     }
 
     private void saveDataUrlInBackground(String dataUrl, String fileName, String mimeType) {
@@ -789,6 +877,13 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
         return fileName.replaceAll("[\\\\/:*?\"<>|\\r\\n]", "_").trim();
     }
 
+    private String resolveDownloadFileName(String requestedFileName, String sourceUrl, String contentDisposition, String mimeType) {
+        if(requestedFileName != null && !requestedFileName.trim().equals("")) {
+            return sanitizeDownloadFileName(requestedFileName);
+        }
+        return sanitizeDownloadFileName(Utility.getFileNameFromDownload(sourceUrl, contentDisposition, mimeType));
+    }
+
     private void downloadToDownloads(WebDownload download) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(download.url).openConnection();
         connection.setInstanceFollowRedirects(true);
@@ -812,7 +907,7 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
             throw new IOException("Unexpected HTTP " + responseCode);
         }
 
-        String fileName = sanitizeDownloadFileName(Utility.getFileNameFromDownload(download.url, download.contentDisposition, download.mimeType));
+        String fileName = resolveDownloadFileName(download.fileName, download.url, download.contentDisposition, download.mimeType);
         String mimeType = download.mimeType;
         if(mimeType == null || mimeType.equals("")) {
             mimeType = connection.getContentType();
@@ -895,12 +990,18 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
         final String userAgent;
         final String contentDisposition;
         final String mimeType;
+        final String fileName;
 
         WebDownload(String url, String userAgent, String contentDisposition, String mimeType) {
+            this(url, userAgent, contentDisposition, mimeType, null);
+        }
+
+        WebDownload(String url, String userAgent, String contentDisposition, String mimeType, String fileName) {
             this.url = normalizeUrl(url);
             this.userAgent = userAgent;
             this.contentDisposition = contentDisposition;
             this.mimeType = mimeType;
+            this.fileName = fileName;
         }
 
         boolean isSupported() {
@@ -913,6 +1014,21 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
     }
 
     private class DownloadJavascriptInterface {
+        @JavascriptInterface
+        public void downloadLink(String url, String fileName, String mimeType) {
+            runOnUiThread(() -> downloadFromJavascript(url, fileName, mimeType));
+        }
+
+        @JavascriptInterface
+        public void saveGeneratedDownload(String dataUrl, String fileName, String mimeType) {
+            runOnUiThread(() -> downloadDataUrl(dataUrl, fileName, null, mimeType));
+        }
+
+        @JavascriptInterface
+        public void downloadLinkFailed() {
+            runOnUiThread(() -> NotificationUtils.showInfoSnackbar(WebViewActivity.this, getString(R.string.file_download_failed), Snackbar.LENGTH_LONG));
+        }
+
         @JavascriptInterface
         public void saveBlob(String token, String dataUrl, String fileName, String mimeType) {
             if(!consumeBlobDownloadToken(token)) return;
@@ -1160,6 +1276,7 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
                 wv.loadUrl("file:///android_asset/errorSite/error_" + langExtension + ".html");
             }
             wv.evaluateJavascript("document.addEventListener(\"visibilitychange\",function (event) {event.stopImmediatePropagation();},true);", null);
+            injectDownloadLinkHandler();
             super.onPageFinished(view, url);
         }
 
