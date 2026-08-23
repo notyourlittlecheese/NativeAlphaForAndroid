@@ -12,6 +12,7 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Build;
@@ -183,6 +184,7 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
         }
 
         setContentView(R.layout.full_webview);
+        configureImeInsets();
 
         if(webapp.isKeepAwake()) {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -669,6 +671,25 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
         successCallback.execute();
         DataManager.getInstance().replaceWebApp(webapp);
         wv.reload();
+    }
+
+    private void configureImeInsets() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return;
+
+        View webViewContainer = findViewById(R.id.webviewActivity);
+        int initialLeft = webViewContainer.getPaddingLeft();
+        int initialTop = webViewContainer.getPaddingTop();
+        int initialRight = webViewContainer.getPaddingRight();
+        int initialBottom = webViewContainer.getPaddingBottom();
+
+        webViewContainer.setOnApplyWindowInsetsListener((view, windowInsets) -> {
+            Insets imeInsets = windowInsets.getInsets(WindowInsets.Type.ime());
+            Insets navigationInsets = windowInsets.getInsets(WindowInsets.Type.navigationBars());
+            int keyboardInset = Math.max(0, imeInsets.bottom - navigationInsets.bottom);
+            view.setPadding(initialLeft, initialTop, initialRight, initialBottom + keyboardInset);
+            return windowInsets;
+        });
+        webViewContainer.requestApplyInsets();
     }
 
     private void startInternalDownload(WebDownload download) {
