@@ -121,6 +121,7 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
     private String mGeoPermissionRequestOrigin = null;
     private WebDownload dl_request_internal = null;
     private String pendingBlobDownloadToken = null;
+    private final Map<String, PendingGeneratedDownload> pendingGeneratedDownloads = new HashMap<>();
     private Map<String, String> CUSTOM_HEADERS;
     protected ValueCallback<Uri[]> filePathCallback;
 
@@ -713,9 +714,17 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
         String token = UUID.randomUUID().toString();
         pendingBlobDownloadToken = token;
         String script = "(function(){"
+                + "function saveDataUrl(dataUrl,fileName,mimeType){"
+                + "var chunkSize=262144;"
+                + "if(dataUrl.length<=chunkSize){NativeAlphaDownloader.saveBlob(" + JSONObject.quote(token) + ",dataUrl,fileName,mimeType);return;}"
+                + "var session=NativeAlphaDownloader.beginBlobDownload(" + JSONObject.quote(token) + ",fileName,mimeType);"
+                + "if(!session){NativeAlphaDownloader.downloadFailed(" + JSONObject.quote(token) + ");return;}"
+                + "for(var i=0;i<dataUrl.length;i+=chunkSize){NativeAlphaDownloader.appendGeneratedDownloadChunk(session,dataUrl.substring(i,i+chunkSize));}"
+                + "NativeAlphaDownloader.finishGeneratedDownload(session);"
+                + "}"
                 + "fetch(" + JSONObject.quote(blobUrl) + ").then(function(response){return response.blob();}).then(function(blob){"
                 + "var reader=new FileReader();"
-                + "reader.onloadend=function(){NativeAlphaDownloader.saveBlob(" + JSONObject.quote(token) + ",reader.result," + JSONObject.quote(fileName) + ",blob.type||" + JSONObject.quote(mimeType == null ? "" : mimeType) + ");};"
+                + "reader.onloadend=function(){saveDataUrl(reader.result," + JSONObject.quote(fileName) + ",blob.type||" + JSONObject.quote(mimeType == null ? "" : mimeType) + ");};"
                 + "reader.onerror=function(){NativeAlphaDownloader.downloadFailed(" + JSONObject.quote(token) + ");};"
                 + "reader.readAsDataURL(blob);"
                 + "}).catch(function(){NativeAlphaDownloader.downloadFailed(" + JSONObject.quote(token) + ");});"
@@ -787,12 +796,29 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
                   function saveBlob(blob, filename, mimeType) {
                     var reader = new FileReader();
                     reader.onloadend = function() {
-                      NativeAlphaDownloader.saveGeneratedDownload(reader.result, filename, blob.type || mimeType || '');
+                      saveDataUrl(reader.result, filename, blob.type || mimeType || '');
                     };
                     reader.onerror = function() {
                       NativeAlphaDownloader.downloadLinkFailed();
                     };
                     reader.readAsDataURL(blob);
+                  }
+
+                  function saveDataUrl(dataUrl, filename, mimeType) {
+                    var chunkSize = 262144;
+                    if (dataUrl.length <= chunkSize) {
+                      NativeAlphaDownloader.saveGeneratedDownload(dataUrl, filename, mimeType);
+                      return;
+                    }
+                    var session = NativeAlphaDownloader.beginGeneratedDownload(filename, mimeType);
+                    if (!session) {
+                      NativeAlphaDownloader.downloadLinkFailed();
+                      return;
+                    }
+                    for (var i = 0; i < dataUrl.length; i += chunkSize) {
+                      NativeAlphaDownloader.appendGeneratedDownloadChunk(session, dataUrl.substring(i, i + chunkSize));
+                    }
+                    NativeAlphaDownloader.finishGeneratedDownload(session);
                   }
 
                   function handleDownloadAnchor(anchor) {
@@ -1032,6 +1058,40 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
         return true;
     }
 
+    private String beginGeneratedDownloadSession(String fileName, String mimeType) {
+        String sessionId = UUID.randomUUID().toString();
+        synchronized (pendingGeneratedDownloads) {
+            pendingGeneratedDownloads.put(sessionId, new PendingGeneratedDownload(fileName, mimeType));
+        }
+        return sessionId;
+    }
+
+    private boolean appendGeneratedDownloadChunk(String sessionId, String chunk) {
+        synchronized (pendingGeneratedDownloads) {
+            PendingGeneratedDownload download = pendingGeneratedDownloads.get(sessionId);
+            if(download == null) return false;
+            download.dataUrl.append(chunk == null ? "" : chunk);
+            return true;
+        }
+    }
+
+    private PendingGeneratedDownload finishGeneratedDownloadSession(String sessionId) {
+        synchronized (pendingGeneratedDownloads) {
+            return pendingGeneratedDownloads.remove(sessionId);
+        }
+    }
+
+    private static class PendingGeneratedDownload {
+        final String fileName;
+        final String mimeType;
+        final StringBuilder dataUrl = new StringBuilder();
+
+        PendingGeneratedDownload(String fileName, String mimeType) {
+            this.fileName = fileName;
+            this.mimeType = mimeType;
+        }
+    }
+
     private static class WebDownload {
         final String url;
         final String userAgent;
@@ -1061,6 +1121,32 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
     }
 
     private class DownloadJavascriptInterface {
+        @JavascriptInterface
+        public String beginGeneratedDownload(String fileName, String mimeType) {
+            return beginGeneratedDownloadSession(fileName, mimeType);
+        }
+
+        @JavascriptInterface
+        public String beginBlobDownload(String token, String fileName, String mimeType) {
+            if(!consumeBlobDownloadToken(token)) return "";
+            return beginGeneratedDownloadSession(fileName, mimeType);
+        }
+
+        @JavascriptInterface
+        public boolean appendGeneratedDownloadChunk(String sessionId, String chunk) {
+            return WebViewActivity.this.appendGeneratedDownloadChunk(sessionId, chunk);
+        }
+
+        @JavascriptInterface
+        public void finishGeneratedDownload(String sessionId) {
+            PendingGeneratedDownload download = finishGeneratedDownloadSession(sessionId);
+            if(download == null) {
+                downloadLinkFailed();
+                return;
+            }
+            runOnUiThread(() -> downloadDataUrl(download.dataUrl.toString(), download.fileName, null, download.mimeType));
+        }
+
         @JavascriptInterface
         public void downloadLink(String url, String fileName, String mimeType) {
             runOnUiThread(() -> downloadFromJavascript(url, fileName, mimeType));
