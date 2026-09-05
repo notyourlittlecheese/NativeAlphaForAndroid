@@ -1219,12 +1219,66 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
                                     Intent intent) {
 
         super.onActivityResult(requestCode, resultCode, intent);
-        if (resultCode == RESULT_CANCELED && requestCode == CODE_OPEN_FILE) {
-            this.filePathCallback.onReceiveValue(null);
-        } else if (resultCode == RESULT_OK && requestCode == CODE_OPEN_FILE) {
-            filePathCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, intent));
-            filePathCallback = null;
+        if (requestCode != CODE_OPEN_FILE) {
+            return;
         }
+
+        ValueCallback<Uri[]> callback = filePathCallback;
+        filePathCallback = null;
+        if (callback == null) {
+            return;
+        }
+
+        callback.onReceiveValue(parseFileChooserResult(resultCode, intent));
+    }
+
+    @Nullable
+    private Uri[] parseFileChooserResult(int resultCode, @Nullable Intent intent) {
+        if (resultCode != RESULT_OK) {
+            return null;
+        }
+
+        if (intent == null) {
+            return WebChromeClient.FileChooserParams.parseResult(resultCode, null);
+        }
+
+        List<Uri> uris = new ArrayList<>();
+        ClipData clipData = intent.getClipData();
+        if (clipData != null) {
+            for (int i = 0; i < clipData.getItemCount(); i++) {
+                addFileChooserUri(uris, clipData.getItemAt(i).getUri(), intent);
+            }
+        }
+        addFileChooserUri(uris, intent.getData(), intent);
+
+        if (!uris.isEmpty()) {
+            return uris.toArray(new Uri[0]);
+        }
+
+        return WebChromeClient.FileChooserParams.parseResult(resultCode, intent);
+    }
+
+    private void addFileChooserUri(@NonNull List<Uri> uris, @Nullable Uri uri, @NonNull Intent sourceIntent) {
+        if (uri == null || uris.contains(uri)) {
+            return;
+        }
+
+        int flags = sourceIntent.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        if ((flags & Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0) {
+            try {
+                grantUriPermission(getPackageName(), uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (SecurityException ignored) {
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT
+                && (flags & Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) != 0) {
+            try {
+                getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (SecurityException ignored) {
+            }
+        }
+
+        uris.add(uri);
     }
 
 
@@ -1272,11 +1326,19 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
         public boolean onShowFileChooser(
                 WebView webView, ValueCallback<Uri[]> pFilePathCallback,
                 WebChromeClient.FileChooserParams fileChooserParams) {
+            if (filePathCallback != null) {
+                filePathCallback.onReceiveValue(null);
+            }
             filePathCallback = pFilePathCallback;
             try {
                 Intent intent = fileChooserParams.createIntent();
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,
+                        fileChooserParams.getMode() == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE);
                 startActivityForResult(intent, CODE_OPEN_FILE);
             } catch (Exception e) {
+                filePathCallback = null;
+                pFilePathCallback.onReceiveValue(null);
                 NotificationUtils.showInfoSnackbar(WebViewActivity.this, getString(R.string.no_filemanager), Snackbar.LENGTH_LONG);
                 e.printStackTrace();
             }
