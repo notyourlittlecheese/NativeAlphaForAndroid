@@ -97,6 +97,7 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
     private static final int NONE = 0;
     private static final int SWIPE = 1;
     private static final int TRESHOLD = 100;
+    private static final int MIN_AUTORELOAD_INTERVAL_SECONDS = 1;
     int webappID = -1;
     private WebView wv;
     private ProgressBar progressBar;
@@ -112,6 +113,8 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
     private WebApp webapp = null;
     private String urlOnFirstPageload = "";
     private boolean fallbackToDefaultLongClickBehaviour = false;
+    private boolean visibilityChangeListenerInjected = false;
+    private boolean desktopViewportAdjusted = false;
     private PopupMenu mPopupMenu = null;
 
     private AdFilter adFilter;
@@ -136,8 +139,9 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
         } else {
             if(webapp.isBiometricProtection()) {
                 new BiometricPromptHelper(WebViewActivity.this).showPrompt(() -> setupWebView(), () -> finish(), getString(R.string.bioprompt_restricted_webapp));
+            } else {
+                setupWebView();
             }
-            setupWebView();
         }
     }
 
@@ -543,6 +547,8 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
             WebViewLauncher.startWebViewInNewProcess(new_webapp, this);
         }
 
+        if (wv == null) return;
+
         wv.onResume();
         wv.resumeTimers();
         this.setDarkModeIfNeeded();
@@ -554,6 +560,9 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
             new BiometricPromptHelper(WebViewActivity.this).showPrompt(() -> fullActivityView.setVisibility(View.VISIBLE), () -> finish(), getString(R.string.bioprompt_restricted_webapp));
         }
         if (webapp.isAutoreload()) {
+            if (reload_handler != null) {
+                reload_handler.removeCallbacksAndMessages(null);
+            }
             reload_handler = new Handler();
             reload();
         }
@@ -563,6 +572,8 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
     @Override
     protected void onPause() {
         super.onPause();
+
+        if (wv == null) return;
 
         wv.evaluateJavascript("document.querySelectorAll('audio').forEach(x => x.pause());document.querySelectorAll('video').forEach(x => x.pause());", null);
         wv.onPause();
@@ -579,11 +590,45 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
     }
 
     private void reload() {
+        int reloadInterval = webapp.getTimeAutoreload();
+        if (reloadInterval < MIN_AUTORELOAD_INTERVAL_SECONDS) {
+            Log.w("AUTORELOAD", "Ignoring invalid reload interval: " + reloadInterval);
+            return;
+        }
         reload_handler.postDelayed(() -> {
             currently_reloading = true;
             wv.reload();
             reload();
-        }, webapp.getTimeAutoreload() * 1000L);
+        }, reloadInterval * 1000L);
+    }
+
+    private void resetPageInjectionState() {
+        visibilityChangeListenerInjected = false;
+        desktopViewportAdjusted = false;
+    }
+
+    private void injectVisibilityChangeListener(WebView view) {
+        if (visibilityChangeListenerInjected) return;
+        visibilityChangeListenerInjected = true;
+        view.evaluateJavascript("if(!window.__nativeAlphaVisibilityListener){window.__nativeAlphaVisibilityListener=true;document.addEventListener(\"visibilitychange\",function(event){event.stopImmediatePropagation();},true);}", null);
+    }
+
+    private void adjustDesktopViewportIfNeeded(WebView view) {
+        if (!webapp.isRequestDesktop() || desktopViewportAdjusted) return;
+        desktopViewportAdjusted = true;
+        view.evaluateJavascript("""
+                (function() {
+                  var width = document.documentElement.clientWidth;
+                  if (!width || width >= 1200) return;
+                  var meta = document.querySelector('meta[name="viewport"]');
+                  if (!meta) {
+                    meta = document.createElement('meta');
+                    meta.name = 'viewport';
+                    if (document.head) document.head.appendChild(meta);
+                  }
+                  meta.setAttribute('content', 'width=1200px, initial-scale=' + (width / 1200));
+                })();
+                """, null);
     }
 
     public WebView getWebView() {
@@ -897,12 +942,14 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
                 String langExtension = LocaleUtils.getFileEnding();
                 wv.loadUrl("file:///android_asset/errorSite/error_" + langExtension + ".html");
             }
-            wv.evaluateJavascript("document.addEventListener(\"visibilitychange\",function (event) {event.stopImmediatePropagation();},true);", null);
+            injectVisibilityChangeListener(view);
+            adjustDesktopViewportIfNeeded(view);
             super.onPageFinished(view, url);
         }
 
         @Override
         public void onPageStarted(WebView view, String url, Bitmap favicon) {
+            resetPageInjectionState();
             adFilter.performScript(view, url);
             super.onPageStarted(view, url, favicon);
         }
@@ -972,15 +1019,6 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
         @Override
         public void onLoadResource(WebView view, String url) {
             super.onLoadResource(view, url);
-
-           if (DataManager.getInstance().getWebApp(webappID).isRequestDesktop())
-               view.evaluateJavascript("""
-                        var needsForcedWidth = document.documentElement.clientWidth < 1200;
-                        if(needsForcedWidth) {
-                          document.querySelector('meta[name=\"viewport\"]').setAttribute('content', 'width=1200px, initial-scale=' + (document.documentElement.clientWidth / 1200));
-                        }
-                       """, null);
-            view.evaluateJavascript("document.addEventListener(    \"visibilitychange\"    , (event) => {         event.stopImmediatePropagation();    }  );", null);
         }
 
         @Override
@@ -1015,5 +1053,3 @@ public class WebViewActivity extends AppCompatActivity implements EasyPermission
         }
     }
 }
-
-
