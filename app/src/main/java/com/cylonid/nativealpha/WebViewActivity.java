@@ -93,6 +93,7 @@ import java.util.Base64;
 import java.util.Calendar;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -113,6 +114,7 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
     private static final int NONE = 0;
     private static final int SWIPE = 1;
     private static final int TRESHOLD = 100;
+    private static final long GENERATED_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000L;
     int webappID = -1;
     private WebView wv;
     private ProgressBar progressBar;
@@ -771,10 +773,28 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
                   if (window.URL && URL.createObjectURL && URL.revokeObjectURL) {
                     var originalCreateObjectURL = URL.createObjectURL.bind(URL);
                     var originalRevokeObjectURL = URL.revokeObjectURL.bind(URL);
+                    function cleanupObjectUrlBlobs() {
+                      var keys = Object.keys(objectUrlBlobs);
+                      var now = Date.now();
+                      keys.forEach(function(key) {
+                        if (objectUrlBlobs[key].expiresAt <= now) delete objectUrlBlobs[key];
+                      });
+                      keys = Object.keys(objectUrlBlobs);
+                      while (keys.length > 32) {
+                        delete objectUrlBlobs[keys.shift()];
+                      }
+                    }
                     URL.createObjectURL = function(object) {
                       var url = originalCreateObjectURL(object);
                       if (object instanceof Blob) {
-                        objectUrlBlobs[url] = object;
+                        cleanupObjectUrlBlobs();
+                        objectUrlBlobs[url] = {
+                          blob: object,
+                          expiresAt: Date.now() + 300000
+                        };
+                        setTimeout(function() {
+                          delete objectUrlBlobs[url];
+                        }, 300000);
                       }
                       return url;
                     };
@@ -829,7 +849,7 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
                     var mimeType = anchor.type || '';
                     if (/^blob:/i.test(href)) {
                       if (objectUrlBlobs[href]) {
-                        saveBlob(objectUrlBlobs[href], filename, mimeType);
+                        saveBlob(objectUrlBlobs[href].blob, filename, mimeType);
                         return true;
                       }
                       fetch(href).then(function(response) {
@@ -1061,6 +1081,7 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
     private String beginGeneratedDownloadSession(String fileName, String mimeType) {
         String sessionId = UUID.randomUUID().toString();
         synchronized (pendingGeneratedDownloads) {
+            cleanupGeneratedDownloadSessionsLocked();
             pendingGeneratedDownloads.put(sessionId, new PendingGeneratedDownload(fileName, mimeType));
         }
         return sessionId;
@@ -1068,6 +1089,7 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
 
     private boolean appendGeneratedDownloadChunk(String sessionId, String chunk) {
         synchronized (pendingGeneratedDownloads) {
+            cleanupGeneratedDownloadSessionsLocked();
             PendingGeneratedDownload download = pendingGeneratedDownloads.get(sessionId);
             if(download == null) return false;
             download.dataUrl.append(chunk == null ? "" : chunk);
@@ -1081,10 +1103,21 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
         }
     }
 
+    private void cleanupGeneratedDownloadSessionsLocked() {
+        long cutoff = System.currentTimeMillis() - GENERATED_DOWNLOAD_TIMEOUT_MS;
+        Iterator<Map.Entry<String, PendingGeneratedDownload>> iterator = pendingGeneratedDownloads.entrySet().iterator();
+        while (iterator.hasNext()) {
+            if(iterator.next().getValue().createdAt < cutoff) {
+                iterator.remove();
+            }
+        }
+    }
+
     private static class PendingGeneratedDownload {
         final String fileName;
         final String mimeType;
         final StringBuilder dataUrl = new StringBuilder();
+        final long createdAt = System.currentTimeMillis();
 
         PendingGeneratedDownload(String fileName, String mimeType) {
             this.fileName = fileName;
@@ -1455,6 +1488,17 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
                 .show();
     }
 
+    private void injectVisibilityHandler(WebView view) {
+        view.evaluateJavascript("""
+                if(!window.__nativeAlphaVisibilityHookInstalled) {
+                  window.__nativeAlphaVisibilityHookInstalled = true;
+                  document.addEventListener("visibilitychange", function(event) {
+                    event.stopImmediatePropagation();
+                  }, true);
+                }
+                """, null);
+    }
+
     private class CustomBrowser extends WebViewClient {
 
         private AdFilter adFilter = AdFilter.Companion.get();
@@ -1470,7 +1514,7 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
                 String langExtension = LocaleUtils.getFileEnding();
                 wv.loadUrl("file:///android_asset/errorSite/error_" + langExtension + ".html");
             }
-            wv.evaluateJavascript("document.addEventListener(\"visibilitychange\",function (event) {event.stopImmediatePropagation();},true);", null);
+            injectVisibilityHandler(view);
             injectDownloadLinkHandler();
             super.onPageFinished(view, url);
         }
@@ -1549,12 +1593,21 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
 
            if (DataManager.getInstance().getWebApp(webappID).isRequestDesktop())
                view.evaluateJavascript("""
+                        if(!window.__nativeAlphaDesktopViewportApplied) {
+                          window.__nativeAlphaDesktopViewportApplied = true;
                         var needsForcedWidth = document.documentElement.clientWidth < 1200;
                         if(needsForcedWidth) {
-                          document.querySelector('meta[name=\"viewport\"]').setAttribute('content', 'width=1200px, initial-scale=' + (document.documentElement.clientWidth / 1200));
+                            var viewport = document.querySelector('meta[name=\"viewport\"]');
+                            if(!viewport) {
+                              viewport = document.createElement('meta');
+                              viewport.setAttribute('name', 'viewport');
+                              document.head.appendChild(viewport);
+                            }
+                            viewport.setAttribute('content', 'width=1200px, initial-scale=' + (document.documentElement.clientWidth / 1200));
+                          }
                         }
                        """, null);
-            view.evaluateJavascript("document.addEventListener(    \"visibilitychange\"    , (event) => {         event.stopImmediatePropagation();    }  );", null);
+            injectVisibilityHandler(view);
         }
 
         @Override
