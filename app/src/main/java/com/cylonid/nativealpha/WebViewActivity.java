@@ -28,6 +28,7 @@ import android.view.LayoutInflater;
 import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
@@ -585,6 +586,32 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
         }
     }
 
+    @Override
+    protected void onDestroy() {
+        if (reload_handler != null) reload_handler.removeCallbacksAndMessages(null);
+        // The layout owns two WebViews, including the unused adblock alternative.
+        // Release them only when this Activity is destroyed, preserving back-stack pages.
+        releaseWebView(findViewById(R.id.webview));
+        releaseWebView(findViewById(R.id.adblockwebview));
+        wv = null;
+        synchronized (pendingGeneratedDownloads) {
+            pendingGeneratedDownloads.clear();
+        }
+        super.onDestroy();
+    }
+
+    private void releaseWebView(WebView view) {
+        if (view == null) return;
+        if (view.getParent() instanceof ViewGroup) {
+            ((ViewGroup) view.getParent()).removeView(view);
+        }
+        view.stopLoading();
+        view.removeJavascriptInterface("NativeAlphaDownloader");
+        view.setWebChromeClient(null);
+        view.setWebViewClient(null);
+        view.destroy();
+    }
+
     private void reload() {
         int reloadInterval = webapp.getTimeAutoreload();
         if (reloadInterval < MIN_AUTORELOAD_INTERVAL_SECONDS) {
@@ -663,7 +690,6 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
     }
     private void hideSystemBars() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            getWindow().setDecorFitsSystemWindows(true);
             WindowInsetsController controller = getWindow().getInsetsController();
             if(controller != null) {
                 controller.show(WindowInsets.Type.statusBars());
@@ -686,7 +712,6 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
         if(webapp.isShowFullscreen()) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
 
-            getWindow().setDecorFitsSystemWindows(true);
             WindowInsetsController controller = getWindow().getInsetsController();
             if (controller != null) {
                 controller.show(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
@@ -723,6 +748,9 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
     private void configureImeInsets() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return;
 
+        // Own all insets in one place. Decor fitting plus IME padding would resize
+        // the WebView twice, making focused inputs jump as the keyboard opens.
+        getWindow().setDecorFitsSystemWindows(false);
         View webViewContainer = findViewById(R.id.webviewActivity);
         int initialLeft = webViewContainer.getPaddingLeft();
         int initialTop = webViewContainer.getPaddingTop();
@@ -730,11 +758,17 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
         int initialBottom = webViewContainer.getPaddingBottom();
 
         webViewContainer.setOnApplyWindowInsetsListener((view, windowInsets) -> {
-            Insets imeInsets = windowInsets.getInsets(WindowInsets.Type.ime());
-            Insets navigationInsets = windowInsets.getInsets(WindowInsets.Type.navigationBars());
-            int keyboardInset = Math.max(0, imeInsets.bottom - navigationInsets.bottom);
-            view.setPadding(initialLeft, initialTop, initialRight, initialBottom + keyboardInset);
-            return windowInsets;
+            Insets insets = windowInsets.getInsets(WindowInsets.Type.systemBars()
+                    | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
+            int left = initialLeft + insets.left;
+            int top = initialTop + insets.top;
+            int right = initialRight + insets.right;
+            int bottom = initialBottom + insets.bottom;
+            if (view.getPaddingLeft() != left || view.getPaddingTop() != top
+                    || view.getPaddingRight() != right || view.getPaddingBottom() != bottom) {
+                view.setPadding(left, top, right, bottom);
+            }
+            return WindowInsets.CONSUMED;
         });
         webViewContainer.requestApplyInsets();
     }
@@ -814,11 +848,14 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
                   if (window.__nativeAlphaDownloadHookInstalled) return;
                   window.__nativeAlphaDownloadHookInstalled = true;
                   var objectUrlBlobs = {};
+                  var blobCleanupTimer = null;
 
                   if (window.URL && URL.createObjectURL && URL.revokeObjectURL) {
                     var originalCreateObjectURL = URL.createObjectURL.bind(URL);
                     var originalRevokeObjectURL = URL.revokeObjectURL.bind(URL);
                     function cleanupObjectUrlBlobs() {
+                      if (blobCleanupTimer !== null) clearTimeout(blobCleanupTimer);
+                      blobCleanupTimer = null;
                       var keys = Object.keys(objectUrlBlobs);
                       var now = Date.now();
                       keys.forEach(function(key) {
@@ -828,18 +865,21 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
                       while (keys.length > 32) {
                         delete objectUrlBlobs[keys.shift()];
                       }
+                      if (keys.length) {
+                        var nextExpiry = Math.min.apply(null, keys.map(function(key) {
+                          return objectUrlBlobs[key].expiresAt;
+                        }));
+                        blobCleanupTimer = setTimeout(cleanupObjectUrlBlobs, Math.max(0, nextExpiry - now));
+                      }
                     }
                     URL.createObjectURL = function(object) {
                       var url = originalCreateObjectURL(object);
                       if (object instanceof Blob) {
-                        cleanupObjectUrlBlobs();
                         objectUrlBlobs[url] = {
                           blob: object,
                           expiresAt: Date.now() + 300000
                         };
-                        setTimeout(function() {
-                          delete objectUrlBlobs[url];
-                        }, 300000);
+                        cleanupObjectUrlBlobs();
                       }
                       return url;
                     };
@@ -1222,7 +1262,9 @@ public class WebViewActivity extends LocalizedAppCompatActivity implements EasyP
                 downloadLinkFailed();
                 return;
             }
-            runOnUiThread(() -> downloadDataUrl(download.dataUrl.toString(), download.fileName, null, download.mimeType));
+            // A large StringBuilder copy must not block input/rendering on the UI thread.
+            String dataUrl = download.dataUrl.toString();
+            runOnUiThread(() -> downloadDataUrl(dataUrl, download.fileName, null, download.mimeType));
         }
 
         @JavascriptInterface
